@@ -8,9 +8,10 @@ import time
 
 import serial
 from PIL import Image, ImageOps
-from serial.tools.list_ports import comports as list_comports
+from serial.tools.list_ports import comports, grep as comports_grep
 
-from niimprint.packet import NiimbotPacket
+from packet import NiimbotPacket
+from printer_models import supported_models
 
 
 class InfoEnum(enum.IntEnum):
@@ -24,6 +25,8 @@ class InfoEnum(enum.IntEnum):
     BATTERY = 10
     DEVICESERIAL = 11
     HARDVERSION = 12
+    UNKNOWN_1 = 13
+    UNKNOWN_2 = 15
 
 
 class RequestCodeEnum(enum.IntEnum):
@@ -73,20 +76,71 @@ class BluetoothTransport(BaseTransport):
 
 
 class SerialTransport(BaseTransport):
-    def __init__(self, port: str = "auto"):
-        port = port if port != "auto" else self._detect_port()
-        self._serial = serial.Serial(port=port, baudrate=115200, timeout=0.5)
+    def __init__(self, port: str = "auto", model: str = "auto", verbose: bool = False):
+        self._model = model
+        self._port = port
+        self._serial_number = None
+        self._verbose = verbose
+        self._detect_port_and_model()
+        print(f"Connecting to printer {self._model.upper()} (Serial No. {self._serial_number}) on {self._port}")
 
-    def _detect_port(self):
-        all_ports = list(list_comports())
-        if len(all_ports) == 0:
+        self._serial = serial.Serial(port=self._port, baudrate=115200, timeout=0.5)
+
+    def _detect_port_and_model(self):
+        com_ports = comports()
+        if self._port != "auto" and self._model != "auto":
+            return
+        elif self._port == "auto":
+            com_ports = comports()
+        else:
+            com_ports = list(comports_grep(port))
+
+        if len(com_ports) == 0:
             raise RuntimeError("No serial ports detected")
-        if len(all_ports) > 1:
-            msg = "Too many serial ports, please select specific one:"
-            for port, desc, hwid in all_ports:
-                msg += f"\n- {port} : {desc} [{hwid}]"
-            raise RuntimeError(msg)
-        return all_ports[0][0]
+
+        # If at least one COM port was detected, filter the USB one and further filter by model name using the serial number
+        if len(com_ports) > 0:
+            detected_devices = []
+            for i in range(len(com_ports)):
+                if "USB" in com_ports[i].hwid:
+                    if self._verbose:
+                        print(f"{com_ports[i].device}:\n",
+                            f"\tName:         {com_ports[i].name}\n",
+                            f"\tDescription:  {com_ports[i].description}\n",
+                            f"\tHWID:         {com_ports[i].hwid}\n",
+                            f"\tVID:          {com_ports[i].vid}\n",
+                            f"\tPID:          {com_ports[i].pid}\n",
+                            f"\tSerial No.:   {com_ports[i].serial_number}\n",
+                            f"\tLocation:     {com_ports[i].location}\n",
+                            f"\tManufacturer: {com_ports[i].manufacturer}\n",
+                            f"\tProduct:      {com_ports[i].product}\n",
+                            f"\tInterface:    {com_ports[i].interface}\n")
+
+                    model_pos = com_ports[i].serial_number.find("-")
+                    if model_pos == -1:
+                        continue
+
+                    # My B1 has VID=13587 and PID=2 - Consider using this in the future for greater reliability.
+                    model = com_ports[i].serial_number[:model_pos]
+                    if model.lower() in supported_models.keys():
+                        detected_devices.append({"device": com_ports[i].device, "model": model, "serial_number": com_ports[i].serial_number})
+
+            if len(detected_devices) == 0:
+                raise RuntimeError("No supported devices detected")
+
+            if len(detected_devices) > 1:
+                error = "Multiple supported devices detected, please select a specific one:\n"
+                for devices in detected_devices:
+                    error += f"\t{devices["device"]}: {devices["model"]} (Serial No. {devices["serial_number"]})\n"
+                raise RuntimeError(error)
+
+            if self._model == "auto":
+                self._model = detected_devices[0]["model"].lower()
+            elif self._model != detected_devices[0]["model"].lower():
+                logging.warning(f"Detected model '{detected_devices[0]["model"]}', but {self._model} was specified. Using model set on command line.")
+
+            self._port = detected_devices[0]["device"]
+            self._serial_number = detected_devices[0]["serial_number"]
 
     def read(self, length: int) -> bytes:
         return self._serial.read(length)
@@ -111,7 +165,12 @@ class PrinterClient:
         for pkt in self._encode_image(image):
             self._send(pkt)
         self.end_page_print()
-        time.sleep(0.3)  # FIXME: Check get_print_status()
+
+        while True:
+            printer_status = self.get_print_status()
+            if printer_status["idle"]:
+                break
+
         while not self.end_print():
             time.sleep(0.1)
 
@@ -284,5 +343,20 @@ class PrinterClient:
 
     def get_print_status(self):
         packet = self._transceive(RequestCodeEnum.GET_PRINT_STATUS, b"\x01", 16)
-        page, progress1, progress2 = struct.unpack(">HBB", packet.data)
-        return {"page": page, "progress1": progress1, "progress2": progress2}
+        unknown0, idle, progress1, progress2, unknown1, unknown2, error, unknown3, unknown4, unknown5 = struct.unpack(">BBBBBBBBBB", packet.data)
+
+        assert 0 <= idle <= 1, "Unexpected value received for idle"
+        return {
+            "unknown0": unknown0,
+            "idle": bool(idle),
+            "progress1": progress1,
+            "progress2": progress2,
+            "unknown1": unknown1,
+            "unknown2": unknown2,
+            "error": bool(error),
+            "error_code": error,
+            "open_paper_compartment": error == 1,
+            "unknown3": unknown3,
+            "unknown4": unknown4,
+            "unknown5": unknown5
+        }
