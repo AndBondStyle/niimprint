@@ -75,6 +75,16 @@ python niimprint -c bluetooth -a "E2:E1:08:03:09:87" -r 90 -i examples/B21_80x50
 
 [![](examples/B21_80x50_result.png)]()
 
+**D110, USB connection (windows), 30x15 mm (230x96 px) label**  
+30x12mm actual printable area (12\*8=96px), also the printer have a slightly incorrect aspect ratio,  
+so instead of 30*8=240px compensating to 30\*7.666=230px for accurate fit.
+
+```
+python niimprint -m d110 -a COM26 -d 3 -r 90 -i .\examples\D110_30x15mm_230x96px.png
+```
+
+[![](examples/D110_30x15_result.png)]()
+
 ## Licence
 
 [MIT](https://choosealicense.com/licenses/mit/). Originally developed by [kjy00302](https://github.com/kjy00302), forked & enhanced by [AndBondStyle](https://github.com/AndBondStyle)
