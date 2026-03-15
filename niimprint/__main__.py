@@ -65,7 +65,7 @@ def print_cmd(model, conn, addr, density, rotate, image, verbose):
     )
 
     if conn == "bluetooth":
-        assert conn is not None, "--addr argument required for bluetooth connection"
+        assert addr is not None, "--addr argument required for bluetooth connection"
         addr = addr.upper()
         assert re.fullmatch(r"([0-9A-F]{2}:){5}([0-9A-F]{2})", addr), "Bad MAC address"
         transport = BluetoothTransport(addr)
