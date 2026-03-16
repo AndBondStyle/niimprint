@@ -75,7 +75,7 @@ class BluetoothTransport(BaseTransport):
 class SerialTransport(BaseTransport):
     def __init__(self, port: str = "auto"):
         port = port if port != "auto" else self._detect_port()
-        self._serial = serial.Serial(port=port, baudrate=115200, timeout=0.5)
+        self._serial = serial.Serial(port=port, baudrate=115200, timeout=2.5)
 
     def _detect_port(self):
         all_ports = list(list_comports())
