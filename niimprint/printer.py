@@ -7,6 +7,7 @@ import struct
 import time
 
 import serial
+from dataclasses import dataclass
 from PIL import Image, ImageOps
 from serial.tools.list_ports import comports as list_comports
 
@@ -40,6 +41,13 @@ class RequestCodeEnum(enum.IntEnum):
     SET_DIMENSION = 19  # 0x13
     SET_QUANTITY = 21  # 0x15
     GET_PRINT_STATUS = 163  # 0xA3
+
+
+@dataclass
+class PrintStatus:
+    finished: bool
+    progress: int
+    error: bool
 
 
 def _packet_to_int(x):
@@ -100,18 +108,27 @@ class PrinterClient:
         self._transport = transport
         self._packetbuf = bytearray()
 
-    def print_image(self, image: Image, density: int = 3):
+    def print_image(self, image: Image, model: str, density: int = 3):
         self.set_label_density(density)
         self.set_label_type(1)
         self.start_print()
-        # self.allow_print_clear()  # Something unsupported in protocol decoding (B21)
+        if model != "b21":
+            self.allow_print_clear()  # Something unsupported in protocol decoding (B21) but needed for D11
         self.start_page_print()
         self.set_dimension(image.height, image.width)
-        # self.set_quantity(1)  # Same thing (B21)
+        if model != "b21":
+            self.set_quantity(1)  # Same thing (B21)
         for pkt in self._encode_image(image):
             self._send(pkt)
         self.end_page_print()
-        time.sleep(0.3)  # FIXME: Check get_print_status()
+        while True:
+            status = self.get_print_status()
+            if status.error:
+                raise RuntimeError("Failure during printing")
+            if status.finished:
+                break
+            logging.info(f"Printing.. {status.progress}%")
+
         while not self.end_print():
             time.sleep(0.1)
 
@@ -284,5 +301,7 @@ class PrinterClient:
 
     def get_print_status(self):
         packet = self._transceive(RequestCodeEnum.GET_PRINT_STATUS, b"\x01", 16)
-        page, progress1, progress2 = struct.unpack(">HBB", packet.data)
-        return {"page": page, "progress1": progress1, "progress2": progress2}
+        finished = bool(packet.data[1])
+        progress = packet.data[2]
+        error = bool(packet.data[6])
+        return PrintStatus(finished, progress, error)
