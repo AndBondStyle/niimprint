@@ -1,0 +1,24 @@
+name: Test
+on: [ push, pull_request ]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Poetry
+        uses: snok/install-poetry@v1
+
+      # todo: add venv caching
+      - run: poetry install --no-interaction
+
+      - name: Test niimprint running
+        run: poetry run python -m niimprint --help
