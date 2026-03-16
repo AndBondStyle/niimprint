@@ -89,7 +89,7 @@ def print_cmd(model, conn, addr, density, rotate, image, verbose):
     assert image.width <= max_width_px, f"Image width too big for {model.upper()}"
 
     printer = PrinterClient(transport)
-    printer.print_image(image, density=density)
+    printer.print_image(image, density=density, model=model)
 
 
 if __name__ == "__main__":
