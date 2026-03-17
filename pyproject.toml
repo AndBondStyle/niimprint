@@ -4,6 +4,9 @@ version = "0.1.0"
 description = ""
 authors = []
 
+[tool.poetry.scripts]
+niimprint = "niimprint.__main__:print_cmd"
+
 [tool.poetry.dependencies]
 python = "~3.11"
 pyserial = "^3.5"
