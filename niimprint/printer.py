@@ -1,10 +1,13 @@
 import abc
+import asyncio
 import enum
 import logging
 import math
 import socket
 import struct
+import threading
 import time
+from queue import Empty, Queue
 
 import serial
 from PIL import Image, ImageOps
@@ -70,6 +73,136 @@ class BluetoothTransport(BaseTransport):
 
     def write(self, data: bytes):
         return self._sock.send(data)
+
+
+# Niimbot BLE GATT — same on D11/D110/D101/B1/B18/B21, verified across forks
+# (NiimBlue web tool, niimprint-android, etc). The protocol char is duplex
+# (notify + write-without-response).
+NIIMBOT_BLE_SERVICE = "e7810a71-73ae-499d-8c15-faa9aef0c3f2"
+NIIMBOT_BLE_CHAR = "bef8d6c9-9c21-4c9e-b632-bd58c1009f9f"
+
+
+class BleakTransport(BaseTransport):
+    """Bluetooth Low Energy transport for Niimbot models that don't advertise
+    classic RFCOMM (e.g. newer D110 batches, which only expose a BLE GATT
+    transparent-serial bridge).
+
+    bleak is async-only; this class runs an asyncio loop in a background
+    thread so the surrounding sync PrinterClient code is unchanged. Inbound
+    notifications go into a Queue that ``read()`` drains.
+    """
+
+    def __init__(self, address: str, timeout: float = 10.0):
+        # Lazy import so users on RFCOMM-only setups don't need bleak installed.
+        try:
+            from bleak import BleakClient, BleakScanner
+        except ImportError as e:
+            raise RuntimeError(
+                "BLE transport requires the 'bleak' package — install with "
+                "`pip install bleak` (or `pip install niimprint[ble]`)."
+            ) from e
+
+        self._BleakClient = BleakClient
+        self._BleakScanner = BleakScanner
+        self._address = address
+        self._timeout = timeout
+        self._rx: Queue[bytes] = Queue()
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True, name="niimprint-ble"
+        )
+        self._thread.start()
+        self._run(self._connect(), timeout=timeout + 20)
+
+    def _run(self, coro, timeout: float = 30.0):
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
+
+    async def _connect(self):
+        # On Linux/BlueZ, a device cached as "Connected: yes" from a prior
+        # session (or a stale entry between runs) causes BleakClient.connect
+        # to throw BleakDeviceNotFoundError. Pre-clear with `bluetoothctl
+        # remove` (idempotent — silently no-ops if the device isn't in the
+        # cache). On macOS/Windows this is a harmless no-op since bluetoothctl
+        # isn't present.
+        try:
+            import shutil
+            import subprocess
+
+            if shutil.which("bluetoothctl"):
+                subprocess.run(
+                    ["bluetoothctl", "remove", self._address],
+                    capture_output=True, timeout=5, check=False,
+                )
+        except Exception as e:
+            logging.debug("BLE: pre-connect cache clear skipped (%s)", e)
+
+        # Now scan: re-populates BlueZ's cache with a fresh entry so the
+        # subsequent connect won't hit a stale-state BleakDeviceNotFoundError.
+        # find_device_by_address returns None on timeout, in which case we
+        # fall back to the bare BleakClient (covers backends that don't need
+        # the pre-scan, e.g. macOS CoreBluetooth).
+        logging.debug("BLE: scanning for %s ...", self._address)
+        device = await self._BleakScanner.find_device_by_address(
+            self._address, timeout=self._timeout
+        )
+        self._client = self._BleakClient(
+            device or self._address, timeout=self._timeout
+        )
+        await self._client.connect()
+        # Discover whether the protocol char lives where we expect; fall back
+        # to scanning for any writable + notify char if the printer ever ships
+        # with a different UUID layout.
+        char = self._client.services.get_characteristic(NIIMBOT_BLE_CHAR)
+        if char is None:
+            for service in self._client.services:
+                for c in service.characteristics:
+                    props = set(c.properties)
+                    if {"notify", "write-without-response"} <= props or (
+                        "notify" in props and "write" in props
+                    ):
+                        char = c
+                        break
+                if char:
+                    break
+        if char is None:
+            raise RuntimeError(
+                "No writable+notify GATT characteristic found on device — "
+                "unexpected BLE layout for a Niimbot printer."
+            )
+        self._char = char
+        await self._client.start_notify(char, self._on_notify)
+
+    def _on_notify(self, _sender, data: bytearray):
+        self._rx.put(bytes(data))
+
+    def read(self, length: int) -> bytes:
+        # PrinterClient asks for up to 1024 bytes and tolerates short reads;
+        # we block briefly for the first chunk then drain any others already
+        # delivered so the recv loop sees complete packets when possible.
+        try:
+            buf = self._rx.get(timeout=1.0)
+        except Empty:
+            return b""
+        while True:
+            try:
+                buf += self._rx.get_nowait()
+            except Empty:
+                break
+        return buf
+
+    def write(self, data: bytes):
+        # response=False matches NiimBlue's writeValueWithoutResponse; bleak
+        # on BlueZ chunks to the negotiated MTU automatically.
+        self._run(
+            self._client.write_gatt_char(self._char, bytes(data), response=False)
+        )
+
+    def close(self):
+        try:
+            self._run(self._client.disconnect(), timeout=5)
+        except Exception:
+            pass
+        self._loop.call_soon_threadsafe(self._loop.stop)
 
 
 class SerialTransport(BaseTransport):

@@ -9,6 +9,10 @@ python = "~3.11"
 pyserial = "^3.5"
 pillow = "^10.1.0"
 click = "^8.1.7"
+bleak = {version = "^0.22.0", optional = true}
+
+[tool.poetry.extras]
+ble = ["bleak"]
 
 [build-system]
 requires = ["poetry-core"]

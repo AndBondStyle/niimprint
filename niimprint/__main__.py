@@ -4,7 +4,12 @@ import re
 import click
 from PIL import Image
 
-from niimprint import BluetoothTransport, PrinterClient, SerialTransport
+from niimprint import (
+    BleakTransport,
+    BluetoothTransport,
+    PrinterClient,
+    SerialTransport,
+)
 
 
 @click.command("print")
@@ -19,10 +24,11 @@ from niimprint import BluetoothTransport, PrinterClient, SerialTransport
 @click.option(
     "-c",
     "--conn",
-    type=click.Choice(["usb", "bluetooth"]),
+    type=click.Choice(["usb", "bluetooth", "ble"]),
     default="usb",
     show_default=True,
-    help="Connection type",
+    help="Connection type (bluetooth=classic RFCOMM; ble=BLE GATT, required for "
+    "newer D110 batches and any printer that advertises only BLE)",
 )
 @click.option(
     "-a",
@@ -69,6 +75,11 @@ def print_cmd(model, conn, addr, density, rotate, image, verbose):
         addr = addr.upper()
         assert re.fullmatch(r"([0-9A-F]{2}:){5}([0-9A-F]{2})", addr), "Bad MAC address"
         transport = BluetoothTransport(addr)
+    if conn == "ble":
+        assert addr is not None, "--addr argument required for ble connection"
+        addr = addr.upper()
+        assert re.fullmatch(r"([0-9A-F]{2}:){5}([0-9A-F]{2})", addr), "Bad MAC address"
+        transport = BleakTransport(addr)
     if conn == "usb":
         port = addr if addr is not None else "auto"
         transport = SerialTransport(port=port)
