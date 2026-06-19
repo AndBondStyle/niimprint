@@ -2,6 +2,7 @@ import abc
 import enum
 import logging
 import math
+import re
 import socket
 import struct
 import time
@@ -11,6 +12,14 @@ from PIL import Image, ImageOps
 from serial.tools.list_ports import comports as list_comports
 
 from niimprint.packet import NiimbotPacket
+
+
+# Niimbot label barcodes follow the pattern "T<width>X<length>[-<count>]" —
+# e.g. T14X40-210 = 14mm tape × 40mm gap × 210 labels per roll. Some variants
+# omit the T or the count, hence the lax pattern.
+_LABEL_BARCODE_RE = re.compile(r"T?(\d+)X(\d+)(?:-(\d+))?", re.IGNORECASE)
+# Niimbot printers are 8 dots/mm across the entire line.
+PRINT_RESOLUTION_PX_PER_MM = 8
 
 
 class InfoEnum(enum.IntEnum):
@@ -100,9 +109,68 @@ class PrinterClient:
         self._transport = transport
         self._packetbuf = bytearray()
 
+    def detect_label(self):
+        """Query the loaded label roll's RFID and parse its barcode.
+
+        Returns the get_rfid() dict augmented with ``width_mm`` / ``length_mm``
+        / ``count`` when the barcode follows the standard "T<w>X<l>-<n>"
+        scheme, or ``None`` if RFID isn't readable (no tag, off-brand label,
+        printer that doesn't support it).
+        """
+        try:
+            info = self.get_rfid()
+        except Exception as e:
+            logging.debug("RFID query failed: %s", e)
+            return None
+        if not info:
+            return None
+        m = _LABEL_BARCODE_RE.match(info.get("barcode", "") or "")
+        if m:
+            info["width_mm"] = int(m.group(1))
+            info["length_mm"] = int(m.group(2))
+            if m.group(3):
+                info["count"] = int(m.group(3))
+        return info
+
     def print_image(self, image: Image, density: int = 3):
+        label = self.detect_label()
+        if label:
+            dims = ""
+            if "width_mm" in label:
+                dims = f" {label['width_mm']}x{label['length_mm']}mm"
+            logging.info(
+                "Loaded label: barcode=%s used=%d/%d type=%d%s",
+                label.get("barcode") or "?",
+                label.get("used_len", 0),
+                label.get("total_len", 0),
+                label.get("type", 1),
+                dims,
+            )
+            # Heartbeat/RFID type codes (1=gapped, 2=continuous, 3=transparent)
+            # match SET_LABEL_TYPE's expected range — pass through if valid,
+            # fall back to 1 if a printer returns something out of range.
+            label_type = label.get("type", 1)
+            if label_type not in (1, 2, 3):
+                label_type = 1
+            # Warn (don't refuse) on dimension mismatch — the user might know
+            # something we don't (e.g. printing a multi-label strip).
+            if "width_mm" in label:
+                max_w_px = label["width_mm"] * PRINT_RESOLUTION_PX_PER_MM
+                if image.width > max_w_px:
+                    logging.warning(
+                        "Image width %dpx exceeds detected label width %dpx "
+                        "(%dmm × %d px/mm). Output will be clipped or printer "
+                        "may refuse. For D-series, the image.width dimension "
+                        "must equal the tape width — try rotating with -r 90.",
+                        image.width, max_w_px, label["width_mm"],
+                        PRINT_RESOLUTION_PX_PER_MM,
+                    )
+        else:
+            label_type = 1
+            logging.debug("RFID not detected — falling back to label type 1 (gapped)")
+
         self.set_label_density(density)
-        self.set_label_type(1)
+        self.set_label_type(label_type)
         self.start_print()
         # self.allow_print_clear()  # Something unsupported in protocol decoding (B21)
         self.start_page_print()
