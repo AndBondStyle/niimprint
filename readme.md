@@ -3,7 +3,7 @@
 **Fork changelog & differences from original version:**
 
 - Tested on Niimbot B1, B18, B21, D11, D110 and Python 3.11
-- Added transport abstraction: switch between bluetooth and USB (serial)
+- Added transport abstraction: switch between bluetooth (classic RFCOMM), BLE (GATT), and USB (serial)
 - Disabled checksum calculation for image encoding (works fine without it so far)
 - Switched to [click](https://click.palletsprojects.com/) CLI library instead of argparse
 - Integrated [pyproject.toml](https://pip.pypa.io/en/stable/reference/build-system/pyproject-toml/) and [poetry](https://python-poetry.org)
@@ -23,7 +23,7 @@ Usage: niimprint [OPTIONS]
 
 Options:
   -m, --model [b1|b18|b21|d11|d110]     Niimbot printer model  [default: b21]
-  -c, --conn [usb|bluetooth]   Connection type  [default: usb]
+  -c, --conn [usb|bluetooth|ble]     Connection type  [default: usb]
   -a, --addr TEXT              Bluetooth MAC address OR serial device path
   -d, --density INTEGER RANGE  Print density  [default: 5; 1<=x<=5]
   -r, --rotate [0|90|180|270]  Image rotation (clockwise)  [default: 0]
@@ -56,6 +56,19 @@ For USB connection, you can omit the `--addr` argument and let the script auto-d
 It seems like B21 and B1 (and maybe other models?) have two bluetooth adresses. They have the same last 3 bytes, but the first 3 are rotated (for example `AA:BB:CC:DD:EE:FF` and `CC:AA:BB:DD:EE:FF`). Connection works only if you disconnect from one and connect to the other. After connecting via bluetoothctl you may get `org.bluez.Error.NotAvailable br-connection-profile-unavailable` error, but printing works fine regardless.
 
 To identify which address is the correct one, run `bluetoothctl info` on the address you want to check. The incorrect one might list `UUID: Generic Access Profile` and `UUID: Generic Attribute Profile`, while the correct one will list `UUID: Serial Port`.
+
+### BLE connection (`-c ble`):
+
+Some newer Niimbot batches (verified on D110, likely others) advertise **only** Bluetooth Low Energy — no classic RFCOMM/SPP. `bluetoothctl info` on those devices shows two vendor GATT services (`e7810a71-…-c3f2` and `49535343-…-e455`) but no `Serial Port` UUID, so the classic `-c bluetooth` transport fails with `[Errno 112] Host is down`. For those printers use `-c ble`, which talks GATT directly via [bleak](https://github.com/hbldh/bleak):
+
+```
+pip install niimprint[ble]   # or: pip install bleak
+python niimprint -m d110 -c ble -a 10:41:02:23:14:F2 -r 90 -i label.png
+```
+
+The BLE transport pre-clears the BlueZ device cache (`bluetoothctl remove`) before each connect — necessary on Linux because a stale `Connected: yes` entry from a previous session makes bleak's `connect()` raise `BleakDeviceNotFoundError`. The pre-clear is a no-op on macOS / Windows where the cache doesn't behave this way.
+
+If your printer advertises classic RFCOMM (B21, B1, older D110 batches), stick with `-c bluetooth` — it's the established path and avoids the BLE dependency.
 
 ## Examples
 
