@@ -12,6 +12,13 @@ from serial.tools.list_ports import comports as list_comports
 
 from niimprint.packet import NiimbotPacket
 
+CONNECT_SETTLE_SECONDS = 0.8
+COMMAND_SETTLE_SECONDS = 0.08
+END_PAGE_SETTLE_SECONDS = 1.0
+PRINT_STATUS_POLL_SECONDS = 0.2
+PRINT_STATUS_TIMEOUT_SECONDS = 30.0
+MAX_PRINT_STATUS_FAILURES = 8
+
 
 class InfoEnum(enum.IntEnum):
     DENSITY = 1
@@ -101,19 +108,86 @@ class PrinterClient:
         self._packetbuf = bytearray()
 
     def print_image(self, image: Image, density: int = 3):
+        self._warm_up_print_session()
         self.set_label_density(density)
+        time.sleep(COMMAND_SETTLE_SECONDS)
         self.set_label_type(1)
+        time.sleep(COMMAND_SETTLE_SECONDS)
         self.start_print()
+        time.sleep(COMMAND_SETTLE_SECONDS)
         # self.allow_print_clear()  # Something unsupported in protocol decoding (B21)
         self.start_page_print()
+        time.sleep(COMMAND_SETTLE_SECONDS)
         self.set_dimension(image.height, image.width)
+        time.sleep(COMMAND_SETTLE_SECONDS)
         # self.set_quantity(1)  # Same thing (B21)
         for pkt in self._encode_image(image):
             self._send(pkt)
+        self._flush_transport()
+        time.sleep(COMMAND_SETTLE_SECONDS)
         self.end_page_print()
-        time.sleep(0.3)  # FIXME: Check get_print_status()
+        time.sleep(END_PAGE_SETTLE_SECONDS)
+        self._wait_for_print_finished()
         while not self.end_print():
             time.sleep(0.1)
+
+    def _warm_up_print_session(self):
+        time.sleep(CONNECT_SETTLE_SECONDS)
+        self._reset_transport_buffers()
+        for action in (self.heartbeat, lambda: self.get_info(InfoEnum.DENSITY)):
+            try:
+                action()
+            except Exception as exc:
+                logging.debug("Ignoring printer warm-up failure: %s", exc)
+        time.sleep(CONNECT_SETTLE_SECONDS)
+        self._reset_transport_buffers()
+
+    def _reset_transport_buffers(self):
+        serial_conn = getattr(self._transport, "_serial", None)
+        if serial_conn is None:
+            return
+        for method_name in ("reset_input_buffer", "reset_output_buffer"):
+            method = getattr(serial_conn, method_name, None)
+            if method is None:
+                continue
+            try:
+                method()
+            except Exception as exc:
+                logging.debug("Ignoring serial buffer reset failure: %s", exc)
+
+    def _flush_transport(self):
+        serial_conn = getattr(self._transport, "_serial", None)
+        if serial_conn is None:
+            return
+        flush = getattr(serial_conn, "flush", None)
+        if flush is not None:
+            flush()
+
+    def _wait_for_print_finished(self):
+        deadline = time.monotonic() + PRINT_STATUS_TIMEOUT_SECONDS
+        last_status = None
+        failed_attempts = 0
+        while time.monotonic() < deadline:
+            try:
+                status = self.get_print_status()
+            except Exception as exc:
+                failed_attempts += 1
+                logging.debug("Retrying print status after failure: %s", exc)
+                if failed_attempts >= MAX_PRINT_STATUS_FAILURES:
+                    logging.debug("Print status unavailable; continuing to end_print")
+                    return
+                time.sleep(PRINT_STATUS_POLL_SECONDS)
+                continue
+
+            last_status = status
+            failed_attempts = 0
+            progress = max(status["progress1"], status["progress2"])
+            if progress >= 100:
+                return
+            logging.info(f"Printing... {progress}%")
+            time.sleep(PRINT_STATUS_POLL_SECONDS)
+
+        logging.debug("Timed out waiting for print completion: %s", last_status)
 
     def _encode_image(self, image: Image):
         img = ImageOps.invert(image.convert("L")).convert("1")
@@ -284,5 +358,5 @@ class PrinterClient:
 
     def get_print_status(self):
         packet = self._transceive(RequestCodeEnum.GET_PRINT_STATUS, b"\x01", 16)
-        page, progress1, progress2 = struct.unpack(">HBB", packet.data)
+        page, progress1, progress2 = struct.unpack(">HBB", packet.data[:4])
         return {"page": page, "progress1": progress1, "progress2": progress2}
