@@ -3,7 +3,7 @@
 **Fork changelog & differences from original version:**
 
 - Tested on Niimbot B1, B18, B21, D11, D110 and Python 3.11
-- Added transport abstraction: switch between bluetooth and USB (serial)
+- Added transport abstraction: switch between classic bluetooth (RFCOMM), BLE (GATT), and USB (serial)
 - Disabled checksum calculation for image encoding (works fine without it so far)
 - Switched to [click](https://click.palletsprojects.com/) CLI library instead of argparse
 - Integrated [pyproject.toml](https://pip.pypa.io/en/stable/reference/build-system/pyproject-toml/) and [poetry](https://python-poetry.org)
@@ -14,6 +14,12 @@
 
 Recommended method is to use [poetry](https://python-poetry.org) and install with `poetry install`. However `requirements.txt` is also provided for convenience. Project is tested on Python 3.11, but should work on other versions.
 
+If you need BLE support, install the optional extra:
+
+```
+poetry install --extras ble
+```
+
 ## Usage
 
 ```
@@ -22,14 +28,14 @@ $ python niimprint --help
 Usage: niimprint [OPTIONS]
 
 Options:
-  -m, --model [b1|b18|b21|d11|d110]     Niimbot printer model  [default: b21]
-  -c, --conn [usb|bluetooth]   Connection type  [default: usb]
-  -a, --addr TEXT              Bluetooth MAC address OR serial device path
-  -d, --density INTEGER RANGE  Print density  [default: 5; 1<=x<=5]
-  -r, --rotate [0|90|180|270]  Image rotation (clockwise)  [default: 0]
-  -i, --image PATH             Image path  [required]
-  -v, --verbose                Enable verbose logging
-  --help                       Show this message and exit.
+  -m, --model [b1|b18|b21|d11|d110]      Niimbot printer model  [default: b21]
+  -c, --conn [usb|bluetooth|ble]         Connection type  [default: usb]
+  -a, --addr TEXT                        Bluetooth MAC/name for BLE or serial device path
+  -d, --density INTEGER RANGE           Print density  [default: 5; 1<=x<=5]
+  -r, --rotate [0|90|180|270]           Image rotation (clockwise)  [default: 0]
+  -i, --image PATH                      Image path  [required]
+  -v, --verbose                         Enable verbose logging
+  --help                                Show this message and exit.
 ```
 
 ### Image orientation:
@@ -57,6 +63,18 @@ It seems like B21 and B1 (and maybe other models?) have two bluetooth adresses. 
 
 To identify which address is the correct one, run `bluetoothctl info` on the address you want to check. The incorrect one might list `UUID: Generic Access Profile` and `UUID: Generic Attribute Profile`, while the correct one will list `UUID: Serial Port`.
 
+### BLE connection:
+
+`--conn ble` uses BLE GATT via [bleak](https://github.com/hbldh/bleak) instead of RFCOMM. Use it for printers that advertise BLE but do not expose the classic Serial Port bluetooth profile. This is the recommended bluetooth transport for macOS and for newer BLE-only Niimbot batches.
+
+Install the optional BLE dependency with `poetry install --extras ble` or `pip install bleak`.
+
+- `--addr` may be a BLE MAC address or the bluetooth device name.
+- On macOS, using the bluetooth device name is often more reliable than the MAC address.
+- If `--addr` is omitted, `niimprint` will scan for Niimbot BLE devices and auto-connect if exactly one candidate is found.
+- The existing `--conn bluetooth` mode remains RFCOMM-oriented and is mainly useful on Linux for printers exposing the Serial Port profile.
+- `niimprint` automatically switches to the `D110_M` v4 print sequence when the connected BLE printer reports that device type, even though the CLI model flag remains `-m d110`.
+
 ## Examples
 
 **B21, USB connection, 30x15 mm (240x120 px) label**
@@ -74,6 +92,12 @@ python niimprint -c bluetooth -a "E2:E1:08:03:09:87" -r 90 -i examples/B21_80x50
 ```
 
 [![](examples/B21_80x50_result.png)]()
+
+**D110 / D110_M, BLE connection on macOS or other BLE-first setups**
+
+```
+python niimprint -c ble -a "D110_M-H913040249" -m d110 -i examples/d110_test_label.png
+```
 
 ## Licence
 

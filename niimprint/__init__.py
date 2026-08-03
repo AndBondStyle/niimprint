@@ -1,1 +1,1 @@
-from .printer import BluetoothTransport, PrinterClient, SerialTransport
+from .printer import BleTransport, BluetoothTransport, PrinterClient, SerialTransport
