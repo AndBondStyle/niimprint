@@ -100,7 +100,7 @@ class PrinterClient:
         self._transport = transport
         self._packetbuf = bytearray()
 
-    def print_image(self, image: Image, density: int = 3, post_page_delay: float = 0.0):
+    def print_image(self, image: Image, density: int = 3, wait_for_status: bool = False):
         self.set_label_density(density)
         self.set_label_type(1)
         self.start_print()
@@ -111,11 +111,35 @@ class PrinterClient:
         for pkt in self._encode_image(image):
             self._send(pkt)
         self.end_page_print()
-        time.sleep(0.3)  # FIXME: Check get_print_status()
-        if post_page_delay:
-            time.sleep(post_page_delay)
+        if wait_for_status:
+            self._wait_for_print_status()
+        else:
+            time.sleep(0.3)  # FIXME: Check get_print_status()
         while not self.end_print():
             time.sleep(0.1)
+
+    def _wait_for_print_status(self, timeout: float = 30.0, poll_interval: float = 0.1):
+        """Poll get_print_status() until the page reports complete, instead of a fixed
+        delay. Verified against a NIIMBOT M2: progress1/progress2 climb to 100 (and
+        `page` increments) once the print head has actually finished firing — ending
+        the job before that happens causes it to silently discard the image (a blank
+        label, no error). Falls back to a short fixed wait if status is never
+        available; only the M2's semantics here are hardware-verified, so this isn't
+        wired up as the default for other models."""
+        deadline = time.time() + timeout
+        got_any_status = False
+        while time.time() < deadline:
+            try:
+                status = self.get_print_status()
+            except Exception:
+                time.sleep(poll_interval)
+                continue
+            got_any_status = True
+            if status["progress1"] >= 100 and status["progress2"] >= 100:
+                return
+            time.sleep(poll_interval)
+        if not got_any_status:
+            time.sleep(0.3)
 
     def _encode_image(self, image: Image):
         img = ImageOps.invert(image.convert("L")).convert("1")
@@ -286,5 +310,7 @@ class PrinterClient:
 
     def get_print_status(self):
         packet = self._transceive(RequestCodeEnum.GET_PRINT_STATUS, b"\x01", 16)
-        page, progress1, progress2 = struct.unpack(">HBB", packet.data)
+        # Some devices (e.g. M2) return extra trailing bytes here; only the
+        # leading {page, progress1, progress2} fields are documented/used.
+        page, progress1, progress2 = struct.unpack(">HBB", packet.data[:4])
         return {"page": page, "progress1": progress1, "progress2": progress2}

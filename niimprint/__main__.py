@@ -94,11 +94,10 @@ def print_cmd(model, conn, addr, density, rotate, image, verbose):
 
     # The M2's print head needs real time to fire after the image data is sent;
     # ending the job on the same ~0.3s timing used for the other models here causes
-    # it to silently discard the buffered image (a blank label, no error). See readme.
-    post_page_delay = 3.0 if model == "m2" else 0.0
-
+    # it to silently discard the buffered image (a blank label, no error). Poll
+    # get_print_status() instead of guessing a fixed delay. See readme.
     printer = PrinterClient(transport)
-    printer.print_image(image, density=density, post_page_delay=post_page_delay)
+    printer.print_image(image, density=density, wait_for_status=(model == "m2"))
 
 
 if __name__ == "__main__":
