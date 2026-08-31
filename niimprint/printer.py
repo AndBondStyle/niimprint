@@ -100,7 +100,7 @@ class PrinterClient:
         self._transport = transport
         self._packetbuf = bytearray()
 
-    def print_image(self, image: Image, density: int = 3):
+    def print_image(self, image: Image, density: int = 3, post_page_delay: float = 0.0):
         self.set_label_density(density)
         self.set_label_type(1)
         self.start_print()
@@ -112,6 +112,8 @@ class PrinterClient:
             self._send(pkt)
         self.end_page_print()
         time.sleep(0.3)  # FIXME: Check get_print_status()
+        if post_page_delay:
+            time.sleep(post_page_delay)
         while not self.end_print():
             time.sleep(0.1)
 

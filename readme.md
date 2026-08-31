@@ -2,7 +2,7 @@
 
 **Fork changelog & differences from original version:**
 
-- Tested on Niimbot B1, B18, B21, D11, D110 and Python 3.11
+- Tested on Niimbot B1, B18, B21, D11, D110, M2 and Python 3.11
 - Added transport abstraction: switch between bluetooth and USB (serial)
 - Disabled checksum calculation for image encoding (works fine without it so far)
 - Switched to [click](https://click.palletsprojects.com/) CLI library instead of argparse
@@ -22,7 +22,7 @@ $ python niimprint --help
 Usage: niimprint [OPTIONS]
 
 Options:
-  -m, --model [b1|b18|b21|d11|d110]     Niimbot printer model  [default: b21]
+  -m, --model [b1|b18|b21|d11|d110|m2]     Niimbot printer model  [default: b21]
   -c, --conn [usb|bluetooth]   Connection type  [default: usb]
   -a, --addr TEXT              Bluetooth MAC address OR serial device path
   -d, --density INTEGER RANGE  Print density  [default: 5; 1<=x<=5]
@@ -42,10 +42,29 @@ Generally, the image comes out of the printer with the same orientation you see 
 
 ### Image resolution:
 
-As far as we've tested, Niimbot printers have **8 pixels per mm** (~203 dpi) resolution. The CLI prints the image you provided as-is, without any checks of the actual label size, so be careful. However the script will check if the image width is too big for selected printer. The maximum width in pixels is usually slightly less than specified maximum width in mm:
+As far as we've tested, most Niimbot printers have **8 pixels per mm** (~203 dpi) resolution — **the M2 is an exception at 300 dpi** (~11.8 px/mm). The CLI prints the image you provided as-is, without any checks of the actual label size, so be careful. However the script will check if the image width is too big for selected printer. The maximum width in pixels is usually slightly less than specified maximum width in mm:
 
 - **B21, B1, B18**: max 384 pixels (almost equal to 50 mm * 8 px/mm = 400)
 - **D11**: max 96 pixels (almost equal to 15 mm * 8 px/mm = 120)
+- **M2**: max 567 pixels (48 mm max print width * 300 dpi / 25.4)
+
+### M2 notes
+
+The M2 differs from the other supported models in a couple of ways:
+
+- It's a thermal *transfer* printer (needs a ribbon), not direct thermal — a missing/
+  exhausted/misaligned ribbon prints a blank label with no error.
+- Its print head needs real time to actually fire after the image data is sent. Ending
+  the job on the same timing used for the other models here causes it to silently
+  discard the buffered image (also a blank label, no error) — this fork adds a ~3s
+  settle delay before finalizing an M2 print to account for that.
+- On at least one USB-connected unit, it enumerated as **two** separate serial ports;
+  only one was the actual data channel; the other never responded. If USB printing
+  seems to hang or do nothing, try the other port.
+- Leave a margin of at least ~5mm on all four edges of your label design — this unit
+  could not reliably print closer than that to any physical edge, and the exact cutoff
+  drifted slightly print-to-print (likely feed/registration slop rather than a fixed
+  offset).
 
 ### USB connection:
 
