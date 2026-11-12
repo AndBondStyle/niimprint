@@ -100,28 +100,63 @@ class PrinterClient:
         self._transport = transport
         self._packetbuf = bytearray()
 
-    def print_image(self, image: Image, density: int = 3):
+    def print_image(self, image: Image, density: int = 3, task: str = "b1"):
         self.set_label_density(density)
         self.set_label_type(1)
-        self.start_print()
+        if task == "v4":
+            self._transceive(
+                RequestCodeEnum.START_PRINT,
+                struct.pack(">H7B", 1, 0, 0, 0, 0, 0, 1, 0),
+            )
+            self._send(NiimbotPacket(RequestCodeEnum.GET_PRINT_STATUS, b"\x01"))
+            time.sleep(0.03)
+        else:
+            self.start_print()
         # self.allow_print_clear()  # Something unsupported in protocol decoding (B21)
-        self.start_page_print()
-        self.set_dimension(image.height, image.width)
+        if task != "v4":
+            self.start_page_print()
+        if task == "v4":
+            packet = self._transceive(
+                RequestCodeEnum.SET_DIMENSION,
+                struct.pack(">HHH7x", image.height, image.width, 1),
+            )
+            if not packet.data[0]:
+                raise RuntimeError("Printer rejected page dimensions")
+        else:
+            self.set_dimension(image.height, image.width)
         # self.set_quantity(1)  # Same thing (B21)
-        for pkt in self._encode_image(image):
+        for pkt in self._encode_image(image, task=task):
             self._send(pkt)
         self.end_page_print()
-        time.sleep(0.3)  # FIXME: Check get_print_status()
+        if task == "v4":
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                status = self.get_print_status()
+                if status and status["page"] >= 1:
+                    break
+                time.sleep(0.1)
+            else:
+                self.end_print()
+                raise TimeoutError("Printer did not confirm the page was printed")
+        else:
+            time.sleep(0.3)
         while not self.end_print():
             time.sleep(0.1)
 
-    def _encode_image(self, image: Image):
+    def _encode_image(self, image: Image, task: str = "b1"):
         img = ImageOps.invert(image.convert("L")).convert("1")
         for y in range(img.height):
             line_data = [img.getpixel((x, y)) for x in range(img.width)]
             line_data = "".join("0" if pix == 0 else "1" for pix in line_data)
             line_data = int(line_data, 2).to_bytes(math.ceil(img.width / 8), "big")
-            counts = (0, 0, 0)  # It seems like you can always send zeros
+            if task == "v4":
+                total = sum(byte.bit_count() for byte in line_data)
+                if total == 0:
+                    yield NiimbotPacket(0x84, struct.pack(">HB", y, 1))
+                    continue
+                counts = (0, total & 0xFF, total >> 8)
+            else:
+                counts = (0, 0, 0)  # It seems like you can always send zeros
             header = struct.pack(">H3BB", y, *counts, 1)
             pkt = NiimbotPacket(0x85, header + line_data)
             yield pkt
@@ -284,5 +319,7 @@ class PrinterClient:
 
     def get_print_status(self):
         packet = self._transceive(RequestCodeEnum.GET_PRINT_STATUS, b"\x01", 16)
-        page, progress1, progress2 = struct.unpack(">HBB", packet.data)
+        if packet is None or len(packet.data) < 4:
+            return None
+        page, progress1, progress2 = struct.unpack(">HBB", packet.data[:4])
         return {"page": page, "progress1": progress1, "progress2": progress2}

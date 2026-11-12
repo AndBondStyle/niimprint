@@ -11,7 +11,7 @@ from niimprint import BluetoothTransport, PrinterClient, SerialTransport
 @click.option(
     "-m",
     "--model",
-    type=click.Choice(["b1", "b18", "b21", "d11", "d110"], False),
+    type=click.Choice(["b1", "b2", "b18", "b21", "d11", "d110"], False),
     default="b21",
     show_default=True,
     help="Niimbot printer model",
@@ -73,9 +73,11 @@ def print_cmd(model, conn, addr, density, rotate, image, verbose):
         port = addr if addr is not None else "auto"
         transport = SerialTransport(port=port)
 
-    if model in ("b1", "b18", "b21"):
+    if model == "b2":
+        max_width_px = 576
+    elif model in ("b1", "b18", "b21"):
         max_width_px = 384
-    if model in ("d11", "d110"):
+    elif model in ("d11", "d110"):
         max_width_px = 96
 
     if model in ("b18", "d11", "d110") and density > 3:
@@ -89,7 +91,8 @@ def print_cmd(model, conn, addr, density, rotate, image, verbose):
     assert image.width <= max_width_px, f"Image width too big for {model.upper()}"
 
     printer = PrinterClient(transport)
-    printer.print_image(image, density=density)
+    task = "v4" if model == "b2" else "b1"
+    printer.print_image(image, density=density, task=task)
 
 
 if __name__ == "__main__":
