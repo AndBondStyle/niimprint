@@ -111,9 +111,25 @@ class PrinterClient:
         for pkt in self._encode_image(image):
             self._send(pkt)
         self.end_page_print()
-        time.sleep(0.3)  # FIXME: Check get_print_status()
+        self._wait_until_printed(timeout=15)
         while not self.end_print():
             time.sleep(0.1)
+
+    def _wait_until_printed(self, timeout: float):
+        """Poll the print status until the page is done.
+
+        Sending END_PRINT while the printer is still printing aborts the job,
+        so only the first part of a longer label would come out.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = self.get_print_status()
+            if status is not None:
+                logging.debug(f"print status: {status}")
+                if status["page"] >= 1 and status["progress1"] >= 100:
+                    return
+            time.sleep(0.2)
+        logging.warning("Timed out waiting for the printer to finish the page")
 
     def _encode_image(self, image: Image):
         img = ImageOps.invert(image.convert("L")).convert("1")
@@ -284,5 +300,8 @@ class PrinterClient:
 
     def get_print_status(self):
         packet = self._transceive(RequestCodeEnum.GET_PRINT_STATUS, b"\x01", 16)
-        page, progress1, progress2 = struct.unpack(">HBB", packet.data)
+        if packet is None or len(packet.data) < 4:
+            return None
+        # Newer firmware may send a longer response; the first 4 bytes match.
+        page, progress1, progress2 = struct.unpack(">HBB", packet.data[:4])
         return {"page": page, "progress1": progress1, "progress2": progress2}
